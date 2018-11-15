@@ -1,5 +1,7 @@
+import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
 import React from 'react';
 import PropTypes from 'prop-types';
+import { processSize } from './utils'
 
 function noop() { }
 
@@ -12,13 +14,14 @@ class MonacoDiffEditor extends React.Component {
   }
 
   componentDidMount() {
-    this.afterViewInit();
+    this.initMonaco();
   }
 
   componentDidUpdate(prevProps) {
-    const context = this.props.context || window;
-    if (this.props.value !== this.__current_value ||
-      this.props.original !== this.__current_original) {
+    if (
+      this.props.value !== this.__current_value ||
+      this.props.original !== this.__current_original
+    ) {
       // Always refer to the latest value
       this.__current_value = this.props.value;
       this.__current_original = this.props.original;
@@ -30,10 +33,18 @@ class MonacoDiffEditor extends React.Component {
       }
     }
     if (prevProps.language !== this.props.language) {
-      context.monaco.editor.setModelLanguage(this.editor.getModel(), this.props.language);
+      const { original, modified } = this.editor.getModel();
+      monaco.editor.setModelLanguage(original, this.props.language);
+      monaco.editor.setModelLanguage(modified, this.props.language);
     }
     if (prevProps.theme !== this.props.theme) {
-      context.monaco.editor.setTheme(this.props.theme);
+      monaco.editor.setTheme(this.props.theme);
+    }
+    if (
+      this.editor &&
+      (this.props.width !== prevProps.width || this.props.height !== prevProps.height)
+    ) {
+      this.editor.layout();
     }
   }
 
@@ -41,108 +52,51 @@ class MonacoDiffEditor extends React.Component {
     this.destroyMonaco();
   }
 
-  editorWillMount(monaco) {
+  editorWillMount() {
     const { editorWillMount } = this.props;
-    editorWillMount(monaco);
+    if (editorWillMount) {
+      editorWillMount(monaco);
+    }
   }
 
-  editorDidMount(editor, monaco) {
+  editorDidMount(editor) {
     this.props.editorDidMount(editor, monaco);
-    editor.onDidUpdateDiff((event) => {
-      const value = editor.getValue();
+    editor.onDidUpdateDiff(() => {
+      const value = editor.getModel().modified.getValue();
 
       // Always refer to the latest value
       this.__current_value = value;
 
       // Only invoking when user input changed
       if (!this.__prevent_trigger_change_event) {
-        this.props.onChange(value, event);
+        this.props.onChange(value);
       }
     });
   }
 
-  afterViewInit() {
-    const context = this.props.context || window;
-    if (context.monaco !== undefined) {
-      this.initMonaco();
-      return;
-    }
-    const { requireConfig } = this.props;
-    const loaderUrl = requireConfig.url || 'vs/loader.js';
-    const onGotAmdLoader = () => {
-      if (context.__REACT_MONACO_EDITOR_LOADER_ISPENDING__) {
-        // Do not use webpack
-        if (requireConfig.paths && requireConfig.paths.vs) {
-          context.require.config(requireConfig);
-        }
-      }
-
-      // Load monaco
-      context.require(['vs/editor/editor.main'], () => {
-        this.initMonaco();
-      });
-
-      // Call the delayed callbacks when AMD loader has been loaded
-      if (context.__REACT_MONACO_EDITOR_LOADER_ISPENDING__) {
-        context.__REACT_MONACO_EDITOR_LOADER_ISPENDING__ = false;
-        const loaderCallbacks = context.__REACT_MONACO_EDITOR_LOADER_CALLBACKS__;
-        if (loaderCallbacks && loaderCallbacks.length) {
-          let currentCallback = loaderCallbacks.shift();
-          while (currentCallback) {
-            currentCallback.fn.call(currentCallback.context);
-            currentCallback = loaderCallbacks.shift();
-          }
-        }
-      }
-    };
-
-    // Load AMD loader if necessary
-    if (context.__REACT_MONACO_EDITOR_LOADER_ISPENDING__) {
-      // We need to avoid loading multiple loader.js when there are multiple editors loading
-      // concurrently, delay to call callbacks except the first one
-      // eslint-disable-next-line max-len
-      context.__REACT_MONACO_EDITOR_LOADER_CALLBACKS__ = context.__REACT_MONACO_EDITOR_LOADER_CALLBACKS__ || [];
-      context.__REACT_MONACO_EDITOR_LOADER_CALLBACKS__.push({
-        context: this,
-        fn: onGotAmdLoader
-      });
-    } else if (typeof context.require === 'undefined') {
-      const loaderScript = context.document.createElement('script');
-      loaderScript.type = 'text/javascript';
-      loaderScript.src = loaderUrl;
-      loaderScript.addEventListener('load', onGotAmdLoader);
-      context.document.body.appendChild(loaderScript);
-      context.__REACT_MONACO_EDITOR_LOADER_ISPENDING__ = true;
-    } else {
-      onGotAmdLoader();
-    }
-  }
-
   updateModel(value, original) {
-    const context = this.props.context || window;
     const { language } = this.props;
-    const originalModel = context.monaco.editor.createModel(original, language)
-    const modifiedModel = context.monaco.editor.createModel(value, language)
+    const originalModel = monaco.editor.createModel(original, language);
+    const modifiedModel = monaco.editor.createModel(value, language);
     this.editor.setModel({
       original: originalModel,
       modified: modifiedModel
-    })
+    });
   }
 
   initMonaco() {
     const value = this.props.value !== null ? this.props.value : this.props.defaultValue;
     const { original, theme, options } = this.props;
-    const context = this.props.context || window;
-    if (this.containerElement && typeof context.monaco !== 'undefined') {
+    if (this.containerElement) {
       // Before initializing monaco editor
-      this.editorWillMount(context.monaco);
-      this.editor = context.monaco.editor.createDiffEditor(this.containerElement, options);
+      this.editorWillMount();
+      this.editor = monaco.editor.createDiffEditor(this.containerElement, options);
       if (theme) {
-        context.monaco.editor.setTheme(theme)
+        monaco.editor.setTheme(theme);
       }
       // After initializing monaco editor
-      this.updateModel(value, original)
-      this.editorDidMount(this.editor, context.monaco);
+      this.updateModel(value, original);
+      this.editorDidMount(this.editor);
     }
   }
 
@@ -154,32 +108,24 @@ class MonacoDiffEditor extends React.Component {
 
   assignRef = (component) => {
     this.containerElement = component;
-  }
+  };
 
   render() {
     const { width, height } = this.props;
-    const fixedWidth = width.toString().indexOf('%') !== -1 ? width : `${width}px`;
-    const fixedHeight = height.toString().indexOf('%') !== -1 ? height : `${height}px`;
+    const fixedWidth = processSize(width);
+    const fixedHeight = processSize(height);
     const style = {
       width: fixedWidth,
-      height: fixedHeight,
+      height: fixedHeight
     };
 
-    return (
-      <div ref={this.assignRef} style={style} className="react-monaco-editor-container" />
-    )
+    return <div ref={this.assignRef} style={style} className="react-monaco-editor-container" />;
   }
 }
 
 MonacoDiffEditor.propTypes = {
-  width: PropTypes.oneOfType([
-    PropTypes.string,
-    PropTypes.number,
-  ]),
-  height: PropTypes.oneOfType([
-    PropTypes.string,
-    PropTypes.number,
-  ]),
+  width: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+  height: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
   original: PropTypes.string,
   value: PropTypes.string,
   defaultValue: PropTypes.string,
@@ -188,9 +134,7 @@ MonacoDiffEditor.propTypes = {
   options: PropTypes.object,
   editorDidMount: PropTypes.func,
   editorWillMount: PropTypes.func,
-  onChange: PropTypes.func,
-  requireConfig: PropTypes.object,
-  context: PropTypes.object // eslint-disable-line react/require-default-props
+  onChange: PropTypes.func
 };
 
 MonacoDiffEditor.defaultProps = {
@@ -204,8 +148,7 @@ MonacoDiffEditor.defaultProps = {
   options: {},
   editorDidMount: noop,
   editorWillMount: noop,
-  onChange: noop,
-  requireConfig: {},
+  onChange: noop
 };
 
 export default MonacoDiffEditor;
